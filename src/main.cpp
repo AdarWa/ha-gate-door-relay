@@ -12,7 +12,7 @@
 
 #define CAMERA_TIMER_MS 60000
 #define GATE_TIMER_MS 30000
-#define DOOR_TIMER_MS 30000
+#define DOOR_TIMER_MS 1000
 
 byte mac[] = {0x00, 0x10, 0xFA, 0x6E, 0x38, 0x4A};
 
@@ -20,20 +20,20 @@ EthernetClient client;
 HADevice device(mac, sizeof(mac));
 HAMqtt mqtt(client, device);
 
-HASwitch door("mainDoor");
+HAButton door("mainDoor");
 HASwitch gate("mainGate");
 HASensor camera("camera");
 HAButton cameraOn("cameraOn");
 HAButton cameraOff("cameraOff");
-HAButton restartEsp("restartEsp");
+HAButton restart("restart");
 
 void cameraTimerCb();
 void gateTimerCb();
 void doorTimerCb();
 
 Ticker cameraTimer(cameraTimerCb, CAMERA_TIMER_MS, 0, MILLIS);
-Ticker gateTimer(cameraTimerCb, GATE_TIMER_MS, 0, MILLIS);
-Ticker doorTimer(cameraTimerCb, DOOR_TIMER_MS, 0, MILLIS);
+Ticker gateTimer(gateTimerCb, GATE_TIMER_MS, 0, MILLIS);
+Ticker doorTimer(doorTimerCb, DOOR_TIMER_MS, 0, MILLIS);
 
 unsigned long lastReconnectAttempt = 0;
 
@@ -43,7 +43,6 @@ bool reconnectMQTT() {
         Serial.println("MQTT disconnected. Reconnecting...");
         if (mqtt.begin(BROKER_ADDR, BROKER_USER, BROKER_PASS)) {
             Serial.println("MQTT reconnected!");
-            door.setState(door.getCurrentState(), true);
             gate.setState(gate.getCurrentState(), true);
             return true;
         }
@@ -56,16 +55,18 @@ bool reconnectMQTT() {
 void cameraTimerCb(){
   camera.setValue("OFF");
   digitalWrite(relay3, LOW);
+  cameraTimer.stop();
 }
 
 void gateTimerCb(){
-  gate.setCurrentState(false);
+  gate.setState(false);
   digitalWrite(relay1, LOW);
+  gateTimer.stop();
 }
 
 void doorTimerCb(){
-  door.setCurrentState(false);
   digitalWrite(relay2, LOW);
+  doorTimer.stop();
 }
 
 bool reconnectEthernet() {
@@ -82,11 +83,7 @@ bool reconnectEthernet() {
 void onSwitchCommand(bool state, HASwitch* sender)
 {
     Serial.println("Got MQTT Command");
-    if (sender == &door) {
-        Serial.println(String("Door -> ") + (state ? "ON" : "OFF"));
-        digitalWrite(relay2, state);
-        doorTimer.start();
-    } else if (sender == &gate) {
+    if (sender == &gate) {
         Serial.println(String("Gate -> ") + (state ? "ON" : "OFF"));
         digitalWrite(relay1, state);
         gateTimer.start();
@@ -96,8 +93,8 @@ void onSwitchCommand(bool state, HASwitch* sender)
 
 void onButtonCommand(HAButton* sender){
     Serial.println("Got MQTT Command");
-    if(sender == &restartEsp){
-      Serial.println("Restarting ESP...");
+    if(sender == &restart){
+      Serial.println("Restarting...");
       NVIC_SystemReset();
     }else if(sender == &cameraOn){
       Serial.println("Camera On");
@@ -108,7 +105,11 @@ void onButtonCommand(HAButton* sender){
       Serial.println("Camera Off");
       camera.setValue("OFF");
       digitalWrite(relay3, LOW);
-    }
+    } else if (sender == &door) {
+        Serial.println("Door On");
+        digitalWrite(relay2, HIGH);
+        doorTimer.start();
+    } 
 }
 
 // --------------------------- SETUP ------------------------------
@@ -133,7 +134,7 @@ void setup() {
 
     door.setName("Door");
     door.setIcon("mdi:door");
-    door.onCommand(onSwitchCommand);
+    door.onCommand(onButtonCommand);
 
     gate.setName("Gate");
     gate.setIcon("mdi:gate");
@@ -151,9 +152,9 @@ void setup() {
     cameraOff.setIcon("mdi:cctv");
     cameraOff.onCommand(onButtonCommand);
 
-    restartEsp.setName("Restart ESP");
-    restartEsp.setIcon("mdi:restart");
-    restartEsp.onCommand(onButtonCommand);
+    restart.setName("Restart");
+    restart.setIcon("mdi:restart");
+    restart.onCommand(onButtonCommand);
 
     mqtt.begin(BROKER_ADDR, BROKER_USER, BROKER_PASS);
 
@@ -178,7 +179,6 @@ void loop() {
     }
 
     mqtt.loop();
-
     gateTimer.update();
     doorTimer.update();
     cameraTimer.update();
