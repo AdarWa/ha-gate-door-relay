@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <Ethernet.h>
 #include <ArduinoHA.h>
+#include <ArduinoOTA.h>
+#include <Ticker.h>
 #include "secrets.h"
 
 #define relay1 3
@@ -8,7 +10,11 @@
 #define relay3 1
 #define relay4 0
 
-byte mac[] = {0x00, 0x10, 0xFA, 0x6E, 0x38, 0x4A}; //17:4a:7a:10:ba:50
+#define CAMERA_TIMER_MS 60000
+#define GATE_TIMER_MS 30000
+#define DOOR_TIMER_MS 30000
+
+byte mac[] = {0x00, 0x10, 0xFA, 0x6E, 0x38, 0x4A};
 
 EthernetClient client;
 HADevice device(mac, sizeof(mac));
@@ -16,34 +22,109 @@ HAMqtt mqtt(client, device);
 
 HASwitch door("mainDoor");
 HASwitch gate("mainGate");
-HASwitch camera("camera");
+HASensor camera("camera");
+HAButton cameraOn("cameraOn");
+HAButton cameraOff("cameraOff");
+HAButton restartEsp("restartEsp");
 
+void cameraTimerCb();
+void gateTimerCb();
+void doorTimerCb();
+
+Ticker cameraTimer(cameraTimerCb, CAMERA_TIMER_MS, 0, MILLIS);
+Ticker gateTimer(cameraTimerCb, GATE_TIMER_MS, 0, MILLIS);
+Ticker doorTimer(cameraTimerCb, DOOR_TIMER_MS, 0, MILLIS);
+
+unsigned long lastReconnectAttempt = 0;
+
+// ---------------------- RECONNECT HANDLER -----------------------
+bool reconnectMQTT() {
+    if (!mqtt.isConnected()) {
+        Serial.println("MQTT disconnected. Reconnecting...");
+        if (mqtt.begin(BROKER_ADDR, BROKER_USER, BROKER_PASS)) {
+            Serial.println("MQTT reconnected!");
+            door.setState(door.getCurrentState(), true);
+            gate.setState(gate.getCurrentState(), true);
+            return true;
+        }
+        Serial.println("MQTT reconnect failed");
+        return false;
+    }
+    return true;
+}
+
+void cameraTimerCb(){
+  camera.setValue("OFF");
+  digitalWrite(relay3, LOW);
+}
+
+void gateTimerCb(){
+  gate.setCurrentState(false);
+  digitalWrite(relay1, LOW);
+}
+
+void doorTimerCb(){
+  door.setCurrentState(false);
+  digitalWrite(relay2, LOW);
+}
+
+bool reconnectEthernet() {
+    if (Ethernet.linkStatus() == LinkOFF) {
+        Serial.println("Ethernet link down. Reinitializing...");
+        Ethernet.begin(mac);
+        delay(2000);
+        return true;
+    }
+    return false;
+}
+
+// ----------------------- SWITCH CALLBACK ------------------------
 void onSwitchCommand(bool state, HASwitch* sender)
 {
     Serial.println("Got MQTT Command");
     if (sender == &door) {
-        Serial.println("Got MQTT command for door: " + state ? "ON" : "OFF");
+        Serial.println(String("Door -> ") + (state ? "ON" : "OFF"));
         digitalWrite(relay2, state);
+        doorTimer.start();
     } else if (sender == &gate) {
-        Serial.println("Got MQTT command for gate: " + state ? "ON" : "OFF");
+        Serial.println(String("Gate -> ") + (state ? "ON" : "OFF"));
         digitalWrite(relay1, state);
-    } else if (sender == &camera){
-      Serial.println("Got MQTT command for camera: " + state ? "ON" : "OFF");
-      digitalWrite(relay3, state);
+        gateTimer.start();
     }
-
-    sender->setState(state);
+    sender->setState(state, true);
 }
 
+void onButtonCommand(HAButton* sender){
+    Serial.println("Got MQTT Command");
+    if(sender == &restartEsp){
+      Serial.println("Restarting ESP...");
+      NVIC_SystemReset();
+    }else if(sender == &cameraOn){
+      Serial.println("Camera On");
+      camera.setValue("ON");
+      digitalWrite(relay3, HIGH);
+      cameraTimer.start();
+    }else if(sender == &cameraOff){
+      Serial.println("Camera Off");
+      camera.setValue("OFF");
+      digitalWrite(relay3, LOW);
+    }
+}
+
+// --------------------------- SETUP ------------------------------
 void setup() {
     pinMode(relay1, OUTPUT);
     pinMode(relay2, OUTPUT);
     pinMode(relay3, OUTPUT);
     pinMode(relay4, OUTPUT);
+
     Serial.begin(9600);
     Serial1.begin(9600);
+
     Ethernet.init(5);
     Ethernet.begin(mac);
+    delay(1000);
+    ArduinoOTA.begin(Ethernet.localIP(), "Arduino", "12345", InternalStorage);
 
     device.setName("Intercom");
     device.setManufacturer("Wasserman Inc.");
@@ -60,15 +141,45 @@ void setup() {
 
     camera.setName("Camera");
     camera.setIcon("mdi:cctv");
-    camera.onCommand(onSwitchCommand);
+    camera.setValue("OFF");
+
+    cameraOn.setName("Camera On");
+    cameraOn.setIcon("mdi:cctv");
+    cameraOn.onCommand(onButtonCommand);
+
+    cameraOff.setName("Camera Off");
+    cameraOff.setIcon("mdi:cctv");
+    cameraOff.onCommand(onButtonCommand);
+
+    restartEsp.setName("Restart ESP");
+    restartEsp.setIcon("mdi:restart");
+    restartEsp.onCommand(onButtonCommand);
 
     mqtt.begin(BROKER_ADDR, BROKER_USER, BROKER_PASS);
+
+    device.enableSharedAvailability();
+    device.enableLastWill();
+    device.setAvailability(true);
 }
 
+// ---------------------------- LOOP ------------------------------
 void loop() {
-    while(Serial1.available() > 0){
-      Serial.print(Serial1.read());
+    ArduinoOTA.handle();
+    // Check Ethernet
+    reconnectEthernet();
+
+    // MQTT Reconnect every 5 Seconds if disconnected
+    if (!mqtt.isConnected()) {
+        unsigned long now = millis();
+        if (now - lastReconnectAttempt > 5000) {
+            lastReconnectAttempt = now;
+            reconnectMQTT();
+        }
     }
-    Ethernet.maintain();
+
     mqtt.loop();
+
+    gateTimer.update();
+    doorTimer.update();
+    cameraTimer.update();
 }
