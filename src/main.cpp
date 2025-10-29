@@ -10,7 +10,7 @@
 #define relay3 1
 #define relay4 0
 
-#define CAMERA_TIMER_MS 60000
+#define CAMERA_TIMER_MS 120000
 #define GATE_TIMER_MS 30000
 #define DOOR_TIMER_MS 1000
 
@@ -53,7 +53,7 @@ bool reconnectMQTT() {
 }
 
 void cameraTimerCb(){
-  camera.setValue("OFF");
+  camera.setValue("off");
   digitalWrite(relay3, LOW);
   cameraTimer.stop();
 }
@@ -84,8 +84,9 @@ void onSwitchCommand(bool state, HASwitch* sender)
 {
     Serial.println("Got MQTT Command");
     if (sender == &gate) {
-        Serial.println(String("Gate -> ") + (state ? "ON" : "OFF"));
+        Serial.println(String("Gate -> ") + (state ? "on" : "off"));
         digitalWrite(relay1, state);
+        gateTimer.stop();
         gateTimer.start();
     }
     sender->setState(state, true);
@@ -98,16 +99,19 @@ void onButtonCommand(HAButton* sender){
       NVIC_SystemReset();
     }else if(sender == &cameraOn){
       Serial.println("Camera On");
-      camera.setValue("ON");
+      camera.setValue("on");
       digitalWrite(relay3, HIGH);
+      cameraTimer.stop();
       cameraTimer.start();
     }else if(sender == &cameraOff){
       Serial.println("Camera Off");
-      camera.setValue("OFF");
+      camera.setValue("off");
       digitalWrite(relay3, LOW);
+      cameraTimer.stop();
     } else if (sender == &door) {
         Serial.println("Door On");
         digitalWrite(relay2, HIGH);
+        doorTimer.stop();
         doorTimer.start();
     } 
 }
@@ -130,7 +134,7 @@ void setup() {
     device.setName("Intercom");
     device.setManufacturer("Wasserman Inc.");
     device.setModel("Seeeduino XIAO");
-    device.setSoftwareVersion("1.0.0");
+    device.setSoftwareVersion("1.0.1");
 
     door.setName("Door");
     door.setIcon("mdi:door");
@@ -142,7 +146,7 @@ void setup() {
 
     camera.setName("Camera");
     camera.setIcon("mdi:cctv");
-    camera.setValue("OFF");
+    camera.setValue("off");
 
     cameraOn.setName("Camera On");
     cameraOn.setIcon("mdi:cctv");
